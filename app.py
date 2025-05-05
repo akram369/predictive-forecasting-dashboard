@@ -232,43 +232,6 @@ if uploaded_file:
         st.download_button("📦 Download Forecast ZIP", data=zip_buf.getvalue(),
                            file_name="forecast_bundle.zip", mime="application/zip")
 
-# === Phase 5: Model Run History ===
-st.sidebar.title("📂 Model Run History")
-log_path = "logs/model_logs.csv"
-
-def display_model_logs():
-    if os.path.exists(log_path):
-        try:
-            logs = pd.read_csv(log_path)
-            if not logs.empty:
-                # Convert timestamp to datetime
-                logs['Timestamp'] = pd.to_datetime(logs['Timestamp'])
-                # Sort by index in descending order
-                logs = logs.sort_values("index", ascending=False)
-                # Display only relevant columns
-                display_cols = ['Timestamp', 'Model', 'Value']
-                st.sidebar.dataframe(
-                    logs[display_cols],
-                    height=300,
-                    use_container_width=True
-                )
-            else:
-                st.sidebar.info("No model runs logged yet. Train a model to see the history.")
-        except Exception as e:
-            st.sidebar.error(f"Error loading logs: {str(e)}")
-            # Show the first few lines of the file for debugging
-            try:
-                with open(log_path, 'r') as f:
-                    content = f.read()
-                    st.sidebar.text("Log file content:")
-                    st.sidebar.text(content[:500])  # Show first 500 characters
-            except:
-                st.sidebar.text("Could not read log file content")
-    else:
-        st.sidebar.info("No model runs logged yet. Train a model to see the history.")
-
-display_model_logs()
-
 # === Phase 7: Model Version Viewer ===
 st.sidebar.title("🧠 Saved Model Versions")
 version_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "model_versions")
@@ -291,12 +254,6 @@ if os.path.exists(version_dir):
         st.sidebar.info("No saved versions yet. Train a model to create versions.")
 else:
     st.sidebar.info("Model version directory not found. Train a model to create the directory.")
-
-# Add a button to reset the model run log for debugging
-if st.sidebar.button("Reset Model Run Log"):
-    if os.path.exists(log_path):
-        os.remove(log_path)
-    st.sidebar.success("Model run log reset. Run a model to create a new log.")
 
 # === Phase 8: Model Comparator & Performance Tracker ===
 st.sidebar.title("📊 Model Comparator")
