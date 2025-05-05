@@ -241,25 +241,17 @@ def display_model_logs():
         try:
             logs = pd.read_csv(log_path)
             if not logs.empty:
-                # Ensure all required columns exist
-                required_columns = ['index', 'Model', 'Value', 'Timestamp']
-                if all(col in logs.columns for col in required_columns):
-                    logs['Timestamp'] = pd.to_datetime(logs['Timestamp'])
-                    # Sort by index in descending order
-                    logs = logs.sort_values("index", ascending=False)
-                    # Display only relevant columns
-                    display_cols = ['Timestamp', 'Model', 'Value']
-                    st.sidebar.dataframe(
-                        logs[display_cols],
-                        height=300,
-                        use_container_width=True
-                    )
-                else:
-                    missing_cols = [col for col in required_columns if col not in logs.columns]
-                    st.sidebar.warning(f"Log file is missing required columns: {missing_cols}")
-                    # Show the current structure
-                    st.sidebar.text("Current log file structure:")
-                    st.sidebar.text(f"Columns found: {logs.columns.tolist()}")
+                # Convert timestamp to datetime
+                logs['Timestamp'] = pd.to_datetime(logs['Timestamp'])
+                # Sort by index in descending order
+                logs = logs.sort_values("index", ascending=False)
+                # Display only relevant columns
+                display_cols = ['Timestamp', 'Model', 'Value']
+                st.sidebar.dataframe(
+                    logs[display_cols],
+                    height=300,
+                    use_container_width=True
+                )
             else:
                 st.sidebar.info("No model runs logged yet. Train a model to see the history.")
         except Exception as e:
