@@ -51,8 +51,17 @@ st.set_page_config(page_title="📦 Demand Forecasting", layout="wide")
 st.title("📈 Predictive Demand Forecasting Dashboard")
 
 # Load holidays from config/holidays.json
-with open("config/holidays.json") as f:
-    holiday_dates = pd.to_datetime(json.load(f)["holidays"])
+try:
+    with open("config/holidays.json") as f:
+        holiday_data = json.load(f)
+        if isinstance(holiday_data, list):
+            holiday_dates = pd.to_datetime(holiday_data)
+        else:
+            st.error("Invalid holidays.json format. Expected an array of dates.")
+            holiday_dates = pd.DatetimeIndex([])
+except Exception as e:
+    st.error(f"Error loading holidays: {str(e)}")
+    holiday_dates = pd.DatetimeIndex([])
 
 # === File Upload ===
 uploaded_file = st.file_uploader("Upload CSV or Excel (InvoiceDate & Quantity required)", type=["csv", "xlsx"])
