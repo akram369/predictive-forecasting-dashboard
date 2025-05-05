@@ -312,7 +312,6 @@ if os.path.exists(version_dir):
 
         if meta1 and meta2:
             st.subheader("📊 Model Comparison Dashboard")
-            
             # Create comparison table
             comparison_data = {
                 "Metric": ["Model Type", "Version", "RMSE", "Training Date"],
@@ -329,20 +328,16 @@ if os.path.exists(version_dir):
                     meta2["timestamp"]
                 ]
             }
-            
             # Convert to DataFrame for better display
             comparison_df = pd.DataFrame(comparison_data)
-            
             # Display the comparison table
             st.dataframe(
                 comparison_df,
                 use_container_width=True,
                 hide_index=True
             )
-            
             # Add a visual separator
             st.markdown("---")
-            
             # RMSE Comparison Chart
             st.markdown("### 📈 RMSE Comparison")
             chart_data = pd.DataFrame({
@@ -350,7 +345,6 @@ if os.path.exists(version_dir):
                 "Model": [meta1["model_name"], meta2["model_name"]],
                 "RMSE": [meta1["rmse"], meta2["rmse"]]
             })
-            
             # Create a bar chart with better styling
             fig_cmp, ax_cmp = plt.subplots(figsize=(10, 4))
             sns.barplot(data=chart_data, x="Version", y="RMSE", hue="Model", ax=ax_cmp)
@@ -358,7 +352,6 @@ if os.path.exists(version_dir):
             ax_cmp.set_ylabel("RMSE (Lower is Better)")
             plt.xticks(rotation=45)
             st.pyplot(fig_cmp)
-            
             # Display the champion model
             best_model = meta1 if meta1["rmse"] < meta2["rmse"] else meta2
             st.success(f"🏆 **Champion Model**: {best_model['model_name']} (v{best_model['version']}) with RMSE {best_model['rmse']:,.2f}")
