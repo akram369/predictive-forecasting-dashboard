@@ -232,20 +232,35 @@ if uploaded_file:
         st.download_button("📦 Download Forecast ZIP", data=zip_buf.getvalue(),
                            file_name="forecast_bundle.zip", mime="application/zip")
 
-# === Phase 5: Model Log Viewer ===
+# === Phase 5: Model Run History ===
 st.sidebar.title("📂 Model Run History")
 log_path = "logs/model_logs.csv"
 if os.path.exists(log_path):
     try:
         logs = pd.read_csv(log_path)
-        logs['Timestamp'] = pd.to_datetime(logs['Timestamp'])
-        st.sidebar.dataframe(
-            logs.sort_values("Timestamp", ascending=False),
-            height=300,
-            use_container_width=True
-        )
+        if not logs.empty:
+            # Ensure column names match what we expect
+            if 'Timestamp' in logs.columns:
+                logs['Timestamp'] = pd.to_datetime(logs['Timestamp'])
+                st.sidebar.dataframe(
+                    logs.sort_values("Timestamp", ascending=False),
+                    height=300,
+                    use_container_width=True
+                )
+            else:
+                st.sidebar.warning("Log file format is incorrect. Please check the file structure.")
+        else:
+            st.sidebar.info("No model runs logged yet. Train a model to see the history.")
     except Exception as e:
         st.sidebar.error(f"Error loading logs: {str(e)}")
+        # Show the first few lines of the file for debugging
+        try:
+            with open(log_path, 'r') as f:
+                content = f.read()
+                st.sidebar.text("Log file content:")
+                st.sidebar.text(content[:500])  # Show first 500 characters
+        except:
+            st.sidebar.text("Could not read log file content")
 else:
     st.sidebar.info("No model runs logged yet. Train a model to see the history.")
 
