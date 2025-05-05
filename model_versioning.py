@@ -1,39 +1,50 @@
-import csv
-from datetime import datetime
 import os
-import pandas as pd
+import json
+from datetime import datetime
+import joblib
 
-LOG_PATH = "logs/model_logs.csv"
+# Define base paths
+VERSION_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "model_versions")
+os.makedirs(VERSION_DIR, exist_ok=True)
 
-def log_model_run(model_name, metric, value):
+def save_model_version(model, model_name, rmse):
     try:
-        # Create logs directory if it doesn't exist
-        os.makedirs(os.path.dirname(LOG_PATH), exist_ok=True)
+        # Create version directory
+        version = f"v{len(os.listdir(VERSION_DIR)) + 1}"
+        version_path = os.path.join(VERSION_DIR, version)
+        os.makedirs(version_path, exist_ok=True)
+
+        # Save model
+        model_path = os.path.join(version_path, "model.pkl")
+        joblib.dump(model, model_path)
+
+        # Save metadata
+        metadata = {
+            "model_name": model_name,
+            "rmse": float(rmse),
+            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "version": version
+        }
         
-        # Initialize or load existing data
-        if os.path.exists(LOG_PATH):
-            try:
-                df = pd.read_csv(LOG_PATH)
-                next_index = len(df)
-            except:
-                df = pd.DataFrame(columns=['index', 'Model', 'Value', 'Timestamp'])
-                next_index = 0
-        else:
-            df = pd.DataFrame(columns=['index', 'Model', 'Value', 'Timestamp'])
-            next_index = 0
-        
-        # Add new row
-        new_row = pd.DataFrame({
-            'index': [next_index],
-            'Model': [model_name],
-            'Value': [value],
-            'Timestamp': [datetime.now().strftime('%Y-%m-%d %H:%M:%S')]
-        })
-        
-        # Combine and save
-        df = pd.concat([df, new_row], ignore_index=True)
-        df.to_csv(LOG_PATH, index=False)
-            
+        with open(os.path.join(version_path, "metadata.json"), "w") as f:
+            json.dump(metadata, f, indent=4)
+
+        return version
     except Exception as e:
-        print(f"Error logging model run: {str(e)}")
-        raise 
+        print(f"Error saving model version: {e}")
+        return None
+
+def load_model_version(version):
+    try:
+        version_path = os.path.join(VERSION_DIR, version)
+        if not os.path.exists(version_path):
+            return None
+        
+        model_path = os.path.join(version_path, "model.pkl")
+        if not os.path.exists(model_path):
+            return None
+        
+        return joblib.load(model_path)
+    except Exception as e:
+        print(f"Error loading model version: {e}")
+        return None
