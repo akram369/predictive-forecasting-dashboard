@@ -313,45 +313,39 @@ if os.path.exists(version_dir):
         if meta1 and meta2:
             st.subheader("📊 Model Comparison Dashboard")
             
-            # Create two columns for model comparison
-            col1, col2 = st.columns(2)
+            # Create comparison table
+            comparison_data = {
+                "Metric": ["Model Type", "Version", "RMSE", "Training Date"],
+                f"Model 1 (v{meta1['version']})": [
+                    meta1["model_name"],
+                    meta1["version"],
+                    f"{meta1['rmse']:,.2f}",
+                    meta1["timestamp"]
+                ],
+                f"Model 2 (v{meta2['version']})": [
+                    meta2["model_name"],
+                    meta2["version"],
+                    f"{meta2['rmse']:,.2f}",
+                    meta2["timestamp"]
+                ]
+            }
             
-            # Function to create model card
-            def create_model_card(meta, col, is_champion=False):
-                with col:
-                    # Model header with version
-                    st.markdown(f"### {'🏆 ' if is_champion else ''}{meta['model_name']} (v{meta['version']})")
-                    
-                    # Create a container for metrics
-                    with st.container():
-                        # RMSE metric with better formatting
-                        st.metric(
-                            "RMSE",
-                            f"{meta['rmse']:,.2f}",
-                            delta=None
-                        )
-                        
-                        # Timestamp in a more readable format
-                        st.markdown(f"**Trained on:** {meta['timestamp']}")
-                        
-                        # Additional metrics in a clean format
-                        st.markdown("---")
-                        st.markdown("#### Model Details")
-                        st.markdown(f"- **Model Type:** {meta['model_name']}")
-                        st.markdown(f"- **Version:** {meta['version']}")
-                        st.markdown(f"- **Training Date:** {meta['timestamp']}")
-                        st.markdown(f"- **Performance:** {meta['rmse']:,.2f} RMSE")
+            # Convert to DataFrame for better display
+            comparison_df = pd.DataFrame(comparison_data)
             
-            # Determine which model is better
-            is_model1_better = meta1["rmse"] < meta2["rmse"]
+            # Display the comparison table
+            st.dataframe(
+                comparison_df,
+                use_container_width=True,
+                hide_index=True
+            )
             
-            # Display model cards
-            create_model_card(meta1, col1, is_model1_better)
-            create_model_card(meta2, col2, not is_model1_better)
+            # Add a visual separator
+            st.markdown("---")
             
             # RMSE Comparison Chart
             st.markdown("### 📈 RMSE Comparison")
-            comparison_df = pd.DataFrame({
+            chart_data = pd.DataFrame({
                 "Version": [f"v{meta1['version']}", f"v{meta2['version']}"],
                 "Model": [meta1["model_name"], meta2["model_name"]],
                 "RMSE": [meta1["rmse"], meta2["rmse"]]
@@ -359,14 +353,14 @@ if os.path.exists(version_dir):
             
             # Create a bar chart with better styling
             fig_cmp, ax_cmp = plt.subplots(figsize=(10, 4))
-            sns.barplot(data=comparison_df, x="Version", y="RMSE", hue="Model", ax=ax_cmp)
+            sns.barplot(data=chart_data, x="Version", y="RMSE", hue="Model", ax=ax_cmp)
             ax_cmp.set_title("RMSE Comparison of Selected Versions")
             ax_cmp.set_ylabel("RMSE (Lower is Better)")
             plt.xticks(rotation=45)
             st.pyplot(fig_cmp)
             
             # Display the champion model
-            best_model = meta1 if is_model1_better else meta2
+            best_model = meta1 if meta1["rmse"] < meta2["rmse"] else meta2
             st.success(f"🏆 **Champion Model**: {best_model['model_name']} (v{best_model['version']}) with RMSE {best_model['rmse']:,.2f}")
         else:
             st.warning("⚠️ Metadata missing for one or both selected versions.")
