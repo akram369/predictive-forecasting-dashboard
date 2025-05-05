@@ -242,11 +242,15 @@ def display_model_logs():
             logs = pd.read_csv(log_path)
             if not logs.empty:
                 # Ensure all required columns exist
-                required_columns = ['Timestamp', 'Model', 'Metric', 'Value']
+                required_columns = ['index', 'Model', 'Value', 'Timestamp']
                 if all(col in logs.columns for col in required_columns):
                     logs['Timestamp'] = pd.to_datetime(logs['Timestamp'])
+                    # Sort by index in descending order
+                    logs = logs.sort_values("index", ascending=False)
+                    # Display only relevant columns
+                    display_cols = ['Timestamp', 'Model', 'Value']
                     st.sidebar.dataframe(
-                        logs.sort_values("Timestamp", ascending=False),
+                        logs[display_cols],
                         height=300,
                         use_container_width=True
                     )
