@@ -18,21 +18,24 @@ def log_model_run(model_name, metric, value):
             writer = csv.writer(file)
             # Write headers if file is new
             if not file_exists:
-                headers = ['Timestamp', 'Model', 'Metric', 'Value']
+                headers = ['index', 'Model', 'Value', 'Timestamp']
                 writer.writerow(headers)
+            
+            # Get the next index
+            next_index = 0
+            if file_exists:
+                try:
+                    df = pd.read_csv(LOG_PATH)
+                    next_index = len(df)
+                except:
+                    pass
             
             # Format the timestamp
             timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
             
             # Write the model run data
-            writer.writerow([timestamp, model_name, metric, value])
+            writer.writerow([next_index, model_name, value, timestamp])
             
-        # Verify the file was written correctly
-        if os.path.exists(LOG_PATH):
-            df = pd.read_csv(LOG_PATH)
-            if not all(col in df.columns for col in ['Timestamp', 'Model', 'Metric', 'Value']):
-                print(f"Warning: Log file columns don't match expected format. Found: {df.columns.tolist()}")
-                
     except Exception as e:
         print(f"Error logging model run: {str(e)}")
         raise 
