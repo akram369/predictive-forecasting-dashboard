@@ -283,13 +283,20 @@ if os.path.exists(version_dir):
             with open(meta_path, "r") as f:
                 metadata = json.load(f)
             st.sidebar.markdown("#### Model Metadata")
-            st.sidebar.json(metadata)
+            meta_df = pd.DataFrame(list(metadata.items()), columns=["Field", "Value"])
+            st.sidebar.table(meta_df)
         else:
             st.sidebar.warning("No metadata found.")
     else:
         st.sidebar.info("No saved versions yet. Train a model to create versions.")
 else:
     st.sidebar.info("Model version directory not found. Train a model to create the directory.")
+
+# Add a button to reset the model run log for debugging
+if st.sidebar.button("Reset Model Run Log"):
+    if os.path.exists(log_path):
+        os.remove(log_path)
+    st.sidebar.success("Model run log reset. Run a model to create a new log.")
 
 # === Phase 8: Model Comparator & Performance Tracker ===
 st.sidebar.title("📊 Model Comparator")
