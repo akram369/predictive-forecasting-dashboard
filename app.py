@@ -234,12 +234,20 @@ if uploaded_file:
 
 # === Phase 5: Model Log Viewer ===
 st.sidebar.title("📂 Model Run History")
-if os.path.exists("model_logs.csv"):
-    logs = pd.read_csv("model_logs.csv")
-    logs['Timestamp'] = pd.to_datetime(logs['Timestamp'])
-    st.sidebar.dataframe(logs.sort_values("Timestamp", ascending=False), height=300)
+log_path = "logs/model_logs.csv"
+if os.path.exists(log_path):
+    try:
+        logs = pd.read_csv(log_path)
+        logs['Timestamp'] = pd.to_datetime(logs['Timestamp'])
+        st.sidebar.dataframe(
+            logs.sort_values("Timestamp", ascending=False),
+            height=300,
+            use_container_width=True
+        )
+    except Exception as e:
+        st.sidebar.error(f"Error loading logs: {str(e)}")
 else:
-    st.sidebar.info("No model runs logged yet.")
+    st.sidebar.info("No model runs logged yet. Train a model to see the history.")
 
 # === Phase 7: Model Version Viewer ===
 st.sidebar.title("🧠 Saved Model Versions")
