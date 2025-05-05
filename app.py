@@ -132,7 +132,7 @@ if uploaded_file:
             plt.clf()
 
             forecast_df = pd.DataFrame({"Date": data.index, "Actual": y, "Predicted": y_pred})
-            log_model_run("XGBoost", rmse)
+            log_model_run("XGBoost", "RMSE", rmse)
             save_model_version(model, "XGBoost", rmse)
 
         except Exception as e:
@@ -154,7 +154,7 @@ if uploaded_file:
         ax.legend()
         st.pyplot(fig)
         forecast_df = pd.DataFrame({"Date": test.index, "Actual": test.values, "Predicted": forecast.values})
-        log_model_run("ARIMA", rmse)
+        log_model_run("ARIMA", "RMSE", rmse)
         save_model_version(model_fit, "ARIMA", rmse)
 
     elif model_choice == "LSTM":
@@ -212,7 +212,7 @@ if uploaded_file:
                 "Predicted": y_pred_inv.flatten()
             })
     
-            log_model_run("LSTM", rmse)
+            log_model_run("LSTM", "RMSE", rmse)
             save_model_version(model, "LSTM", rmse)
     
         train_lstm()
