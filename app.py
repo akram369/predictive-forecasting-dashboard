@@ -1,155 +1,444 @@
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import LSTM, Dense
+from sklearn.preprocessing import MinMaxScaler
+from model_versioning import save_model_version
+from utils.model_monitor import log_model_run
+from utils.data_loader import load_data
+from utils.forecasting_utils import generate_features
 import streamlit as st
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
-import seaborn as sns
-import os
-import json
-import joblib
-import time
+import xgboost
 from statsmodels.tsa.arima.model import ARIMA
 from sklearn.metrics import mean_squared_error
-from xgboost import XGBRegressor
-from tensorflow.keras.models import Sequential
-from tensorflow.keras.layers import LSTM, Dense
-
-# ----------------------------
-# Helpers
-# ----------------------------
-VERSION_DIR = "versions"
-CHAMPION_FILE = os.path.join(VERSION_DIR, "champion.json")
-
-if not os.path.exists(VERSION_DIR):
-    os.makedirs(VERSION_DIR)
+import shap
+import seaborn as sns
+import joblib
+import io
+import zipfile
+import os
+import warnings
+import json
+import requests
+import threading
 
 
-def save_metadata(version, model_name, rmse):
-    meta = {
-        "version": version,
-        "model_name": model_name,
-        "rmse": rmse,
-        "timestamp": time.strftime("%Y-%m-%d %H:%M:%S")
+# Champion model path
+CHAMPION_MODEL_PATH = "model_versions/{version}/model.pkl"
+
+def get_champion_prediction(input_features: dict, version: str):
+    model_path = CHAMPION_MODEL_PATH.format(version=version)
+    if not os.path.exists(model_path):
+        return {"error": "Champion model not found."}
+
+    model = joblib.load(model_path)
+
+    input_df = pd.DataFrame([input_features])
+    forecast = model.predict(input_df)[0]
+
+    return {
+        "forecast": float(forecast),
+        "model": "Champion XGBoost",
+        "status": "success"
     }
-    path = os.path.join(VERSION_DIR, version, "metadata.json")
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "w") as f:
-        json.dump(meta, f)
-    return meta
 
 
-def load_metadata(version):
-    path = os.path.join(VERSION_DIR, version, "metadata.json")
-    if os.path.exists(path):
-        with open(path, "r") as f:
-            return json.load(f)
-    return None
+
+warnings.filterwarnings("ignore")
+
+st.set_page_config(page_title="📦 Demand Forecasting", layout="wide")
+st.title("📈 Predictive Demand Forecasting Dashboard")
+
+# Load holidays from config/holidays.json
+default_holidays = [
+    "2024-01-01",  # New Year's Day
+    "2024-12-25",  # Christmas
+    "2024-11-28",  # Thanksgiving
+    "2024-07-04"   # Independence Day
+]
+
+try:
+    with open("config/holidays.json") as f:
+        holiday_data = json.load(f)
+        if isinstance(holiday_data, list):
+            holiday_dates = pd.to_datetime(holiday_data)
+        else:
+            st.warning("Invalid holidays.json format. Using default holidays.")
+            holiday_dates = pd.to_datetime(default_holidays)
+except Exception as e:
+    st.warning(f"Could not load holidays.json. Using default holidays. Error: {str(e)}")
+    holiday_dates = pd.to_datetime(default_holidays)
+
+# === File Upload ===
+uploaded_file = st.file_uploader("Upload CSV or Excel (InvoiceDate & Quantity required)", type=["csv", "xlsx"])
+if uploaded_file:
+    try:
+        if uploaded_file.name.endswith(".csv"):
+            df_raw = pd.read_csv(uploaded_file, encoding="ISO-8859-1")
+        else:
+            df_raw = pd.read_excel(uploaded_file)
+        df = df_raw[['InvoiceDate', 'Quantity']].copy()
+        df['InvoiceDate'] = pd.to_datetime(df['InvoiceDate'])
+        st.success("✅ Dataset loaded successfully!")
+    except Exception as e:
+        st.error(f"File Error: {e}")
+        st.stop()
+
+    # === Data Preparation ===
+    daily_demand = df.set_index('InvoiceDate').resample('D')['Quantity'].sum().fillna(0)
+    data = daily_demand.to_frame(name='Quantity')
+    data['is_promo'] = (data.index.weekday == 4).astype(int)
+    data['is_holiday'] = data.index.isin(holiday_dates).astype(int)
+    for lag in range(1, 8):
+        data[f'lag_{lag}'] = data['Quantity'].shift(lag)
+    data.dropna(inplace=True)
+
+    st.subheader("📊 Daily Demand Overview")
+    st.line_chart(daily_demand)
+
+    # === Model Selection ===
+    model_choice = st.selectbox("Select Forecasting Model", ["XGBoost", "ARIMA", "LSTM"])
+    fig, ax = plt.subplots(figsize=(10, 4))
+    forecast_df = pd.DataFrame()
+
+    if model_choice == "XGBoost":
+        st.subheader("🚀 XGBoost Forecasting")
+        from xgboost import XGBRegressor
+        X = data.drop("Quantity", axis=1).copy()
+        y = data["Quantity"].copy()
+
+        try:
+            model = XGBRegressor()
+            model.fit(X, y)
+            y_pred = model.predict(X)
+
+            rmse = np.sqrt(mean_squared_error(y, y_pred))
+            st.metric("📉 XGBoost RMSE", f"{rmse:.2f}")
+
+            ax.plot(data.index, y, label="Actual")
+            ax.plot(data.index, y_pred, label="Forecast", color="red")
+            ax.legend()
+            st.pyplot(fig)
+
+            # SHAP Summary
+            st.subheader("🔍 SHAP Summary Plot")
+            explainer = shap.Explainer(model, X)
+            shap_values = explainer(X)
+            import matplotlib.pyplot as plt
+            fig, ax = plt.subplots()
+            shap.summary_plot(shap_values, X, show=False)
+            st.pyplot(fig)
+            plt.clf()
+
+            forecast_df = pd.DataFrame({"Date": data.index, "Actual": y, "Predicted": y_pred})
+            log_model_run("XGBoost", "RMSE", rmse)
+            save_model_version(model, "XGBoost", rmse)
+
+        except Exception as e:
+            st.error(f"⚠️ Error during XGBoost modeling: {e}")
+
+    elif model_choice == "ARIMA":
+        st.subheader("📈 ARIMA Forecasting")
+        train_size = int(len(daily_demand) * 0.8)
+        train, test = daily_demand[:train_size], daily_demand[train_size:]
+        model = ARIMA(train, order=(5, 1, 2))
+        model_fit = model.fit()
+        forecast = model_fit.forecast(steps=len(test))
+        forecast.index = test.index
+        rmse = np.sqrt(mean_squared_error(test, forecast))
+        st.metric("📉 ARIMA RMSE", f"{rmse:.2f}")
+        ax.plot(train.index, train, label="Train")
+        ax.plot(test.index, test, label="Test")
+        ax.plot(test.index, forecast, label="Forecast", color="red")
+        ax.legend()
+        st.pyplot(fig)
+        forecast_df = pd.DataFrame({"Date": test.index, "Actual": test.values, "Predicted": forecast.values})
+        log_model_run("ARIMA", "RMSE", rmse)
+        save_model_version(model_fit, "ARIMA", rmse)
+
+    elif model_choice == "LSTM":
+        st.subheader("🤖 LSTM Forecasting")
+    
+        scaler = MinMaxScaler()
+        scaled_qty = scaler.fit_transform(data[['Quantity']])
+    
+        def create_sequences(data, window=30):
+            X, y = [], []
+            for i in range(len(data) - window):
+                X.append(data[i:i+window])
+                y.append(data[i+window])
+            return np.array(X), np.array(y)
+    
+        window = 30
+        X_seq, y_seq = create_sequences(scaled_qty, window)
+        split = int(0.8 * len(X_seq))
+        X_train, X_test = X_seq[:split], X_seq[split:]
+        y_train, y_test = y_seq[:split], y_seq[split:]
+    
+        # Reshape for LSTM input
+        X_train = X_train.reshape((X_train.shape[0], X_train.shape[1], 1))
+        X_test = X_test.reshape((X_test.shape[0], X_test.shape[1], 1))
+    
+        # For plotting later
+        test_dates = data.index[window + split:]
+    
+        def train_lstm():
+            model = Sequential()
+            model.add(LSTM(64, activation='relu', input_shape=(window, 1)))
+            model.add(Dense(1))
+            model.compile(optimizer='adam', loss='mse')
+            model.fit(X_train, y_train, epochs=20, batch_size=16, verbose=0)
+    
+            y_pred = model.predict(X_test)
+            y_pred_inv = scaler.inverse_transform(y_pred)
+            y_test_inv = scaler.inverse_transform(y_test)
+    
+            rmse = np.sqrt(mean_squared_error(y_test_inv, y_pred_inv))
+            st.metric("📉 LSTM RMSE", f"{rmse:.2f}")
+    
+            fig, ax = plt.subplots(figsize=(10, 4))
+            ax.plot(test_dates, y_test_inv, label="Actual")
+            ax.plot(test_dates, y_pred_inv, label="Forecast", color="red")
+            ax.set_title("LSTM Forecast vs Actual")
+            ax.set_xlabel("Date")
+            ax.set_ylabel("Quantity")
+            ax.legend()
+            st.pyplot(fig)
+    
+            forecast_df = pd.DataFrame({
+                "Date": test_dates,
+                "Actual": y_test_inv.flatten(),
+                "Predicted": y_pred_inv.flatten()
+            })
+    
+            log_model_run("LSTM", "RMSE", rmse)
+            save_model_version(model, "LSTM", rmse)
+    
+        train_lstm()
 
 
-def list_versions():
-    return [d for d in os.listdir(VERSION_DIR) if os.path.isdir(os.path.join(VERSION_DIR, d))]
 
+    # === Forecast Export ===
+    if not forecast_df.empty:
+        csv_buf = io.StringIO()
+        forecast_df.to_csv(csv_buf, index=False)
+        img_buf = io.BytesIO()
+        fig.savefig(img_buf, format='png')
+        zip_buf = io.BytesIO()
+        with zipfile.ZipFile(zip_buf, "w") as z:
+            z.writestr("forecast.csv", csv_buf.getvalue())
+            z.writestr("forecast_plot.png", img_buf.getvalue())
+        st.download_button("📦 Download Forecast ZIP", data=zip_buf.getvalue(),
+                           file_name="forecast_bundle.zip", mime="application/zip")
 
-def save_champion(version):
-    with open(CHAMPION_FILE, "w") as f:
-        json.dump({"champion": version}, f)
+# === Phase 7: Model Version Viewer ===
+st.sidebar.title("🧠 Saved Model Versions")
+version_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "model_versions")
+os.makedirs(version_dir, exist_ok=True)
 
-
-def load_champion():
-    if os.path.exists(CHAMPION_FILE):
-        with open(CHAMPION_FILE, "r") as f:
-            return json.load(f).get("champion")
-    return None
-
-# ----------------------------
-# Streamlit UI
-# ----------------------------
-st.title("AI-based Predictive Demand Forecasting")
-st.sidebar.header("Navigation")
-menu = st.sidebar.radio("Go to", ["Upload Data", "Train Model", "Compare Versions", "Champion Model"])
-
-# ----------------------------
-# Upload Section
-# ----------------------------
-if menu == "Upload Data":
-    file = st.file_uploader("Upload dataset (CSV)", type="csv")
-    if file:
-        df = pd.read_csv(file)
-        st.session_state["data"] = df
-        st.write("Preview:", df.head())
-
-# ----------------------------
-# Training Section
-# ----------------------------
-if menu == "Train Model":
-    if "data" not in st.session_state:
-        st.warning("Please upload data first")
+if os.path.exists(version_dir):
+    versions = sorted(os.listdir(version_dir))
+    if versions:
+        selected_version = st.sidebar.selectbox("Select Version Folder", versions)
+        meta_path = os.path.join(version_dir, selected_version, "metadata.json")
+        if os.path.exists(meta_path):
+            with open(meta_path, "r") as f:
+                metadata = json.load(f)
+            st.sidebar.markdown("#### Model Metadata")
+            meta_df = pd.DataFrame(list(metadata.items()), columns=["Field", "Value"])
+            st.sidebar.table(meta_df)
+        else:
+            st.sidebar.warning("No metadata found.")
     else:
-        model_choice = st.selectbox("Choose Model", ["ARIMA", "XGBoost"])
-        df = st.session_state["data"]
+        st.sidebar.info("No saved versions yet. Train a model to create versions.")
+else:
+    st.sidebar.info("Model version directory not found. Train a model to create the directory.")
 
-        if st.button("Train"):
-            y = df.iloc[:, -1].values  # assume last col is target
+# === Phase 8: Model Comparator & Performance Tracker ===
+st.sidebar.title("📊 Model Comparator")
 
-            if model_choice == "ARIMA":
-                model = ARIMA(y, order=(5,1,0))
-                model_fit = model.fit()
-                preds = model_fit.predict(start=1, end=len(y)-1)
-                rmse = np.sqrt(mean_squared_error(y[1:], preds))
+if os.path.exists(version_dir):
+    version_list = sorted(os.listdir(version_dir))
+    if len(version_list) >= 2:
+        v1 = st.sidebar.selectbox("Compare Version 1", version_list, key="v1")
+        v2 = st.sidebar.selectbox("Compare Version 2", version_list, key="v2")
 
-            elif model_choice == "XGBoost":
-                X = np.arange(len(y)).reshape(-1,1)
-                model = XGBRegressor()
-                model.fit(X, y)
-                preds = model.predict(X)
-                rmse = np.sqrt(mean_squared_error(y, preds))
+        def load_metadata(version):
+            path = os.path.join(version_dir, version, "metadata.json")
+            if os.path.exists(path):
+                with open(path, "r") as f:
+                    return json.load(f)
+            return None
 
-            version = f"{model_choice.lower()}_{int(time.time())}"
-            joblib.dump(model, os.path.join(VERSION_DIR, version, "model.pkl"))
-            meta = save_metadata(version, model_choice, rmse)
+        meta1 = load_metadata(v1)
+        meta2 = load_metadata(v2)
 
-            st.success(f"Trained {model_choice} with RMSE: {rmse:.2f}")
-            st.json(meta)
-
-# ----------------------------
-# Compare Section
-# ----------------------------
-if menu == "Compare Versions":
-    version_list = list_versions()
-    if len(version_list) < 2:
-        st.info("Need at least 2 versions to compare")
+        if meta1 and meta2:
+            st.subheader("📊 Model Comparison Dashboard")
+            # Create comparison table
+            comparison_data = {
+                "Metric": ["Model Type", "Version", "RMSE", "Training Date"],
+                f"Model 1 (v{meta1['version']})": [
+                    meta1["model_name"],
+                    meta1["version"],
+                    f"{meta1['rmse']:,.2f}",
+                    meta1["timestamp"]
+                ],
+                f"Model 2 (v{meta2['version']})": [
+                    meta2["model_name"],
+                    meta2["version"],
+                    f"{meta2['rmse']:,.2f}",
+                    meta2["timestamp"]
+                ]
+            }
+            # Convert to DataFrame for better display
+            comparison_df = pd.DataFrame(comparison_data)
+            # Display the comparison table
+            st.dataframe(
+                comparison_df,
+                use_container_width=True,
+                hide_index=True
+            )
+            # Add a visual separator
+            st.markdown("---")
+            # RMSE Comparison Chart
+            st.markdown("### 📈 RMSE Comparison")
+            chart_data = pd.DataFrame({
+                "Version": [f"v{meta1['version']}", f"v{meta2['version']}"],
+                "Model": [meta1["model_name"], meta2["model_name"]],
+                "RMSE": [meta1["rmse"], meta2["rmse"]]
+            })
+            # Create a bar chart with better styling
+            fig_cmp, ax_cmp = plt.subplots(figsize=(10, 4))
+            sns.barplot(data=chart_data, x="Version", y="RMSE", hue="Model", ax=ax_cmp)
+            ax_cmp.set_title("RMSE Comparison of Selected Versions")
+            ax_cmp.set_ylabel("RMSE (Lower is Better)")
+            plt.xticks(rotation=45)
+            st.pyplot(fig_cmp)
+            # Display the champion model
+            best_model = meta1 if meta1["rmse"] < meta2["rmse"] else meta2
+            st.success(f"🏆 **Champion Model**: {best_model['model_name']} (v{best_model['version']}) with RMSE {best_model['rmse']:,.2f}")
+        else:
+            st.warning("⚠️ Metadata missing for one or both selected versions.")
     else:
-        v1 = st.selectbox("Select Version 1", version_list, key="compare_v1")
-        v2 = st.selectbox("Select Version 2", version_list, key="compare_v2")
+        st.sidebar.info("Need at least 2 versions for comparison. Train more models.")
 
-        if v1 and v2 and v1 != v2:
-            data = []
-            for v in [v1, v2]:
-                meta = load_metadata(v)
-                if meta:
-                    data.append({
-                        "Version": v,
-                        "Model": meta["model_name"],
-                        "RMSE": meta["rmse"]
-                    })
+# === Phase 9: Champion Deployment & Forecast API ===
+st.sidebar.title("🏆 Champion Model")
 
-            df = pd.DataFrame(data)
-            st.write(df)
+# Identify the model version with the lowest RMSE
+champion_meta = None
+if os.path.exists(version_dir):
+    best_rmse = float("inf")
+    for version in os.listdir(version_dir):
+        meta_path = os.path.join(version_dir, version, "metadata.json")
+        if os.path.exists(meta_path):
+            with open(meta_path, "r") as f:
+                meta = json.load(f)
+                if meta["rmse"] < best_rmse:
+                    best_rmse = meta["rmse"]
+                    champion_meta = {
+                        "version": version,
+                        "model_type": meta["model_name"],
+                        "rmse": meta["rmse"]
+                    }
 
-            plt.figure(figsize=(8,5))
-            sns.barplot(x="Version", y="RMSE", hue="Model", data=df)
-            plt.title("RMSE Comparison of Selected Versions")
-            st.pyplot(plt)
+if champion_meta:
+    st.sidebar.success(f"Champion Model: {champion_meta['model_type']} (v{champion_meta['version']})")
+    st.sidebar.info(f"RMSE: {champion_meta['rmse']:.2f}")
+else:
+    st.sidebar.warning("No champion model found. Train a model to create a champion.")
 
-# ----------------------------
-# Champion Section
-# ----------------------------
-if menu == "Champion Model":
-    version_list = list_versions()
-    champion = load_champion()
+with st.subheader("🌐 Real-time Forecast with Champion"):
+    forecast_days = st.number_input("Forecast how many days ahead?", min_value=1, max_value=30, value=5)
 
-    st.write("Current Champion:", champion if champion else "None")
+    if st.button("Forecast with Champion"):
+        if not champion_meta:
+            st.error("No champion model available. Please train a model first.")
+        else:
+            try:
+                recent = daily_demand[-7:].values.tolist()
+                today = pd.Timestamp.now().normalize()
+                is_promo = 1 if today.weekday() == 4 else 0
+                is_holiday = 1 if today.strftime("%Y-%m-%d") in holiday_dates else 0
 
-    choice = st.selectbox("Select Champion Version", version_list)
-    if st.button("Set as Champion"):
-        save_champion(choice)
-        st.success(f"Champion updated to {choice}")
+                input_data = {
+                    "is_promo": is_promo,
+                    "is_holiday": is_holiday
+                }
+                for j in range(1, 8):
+                    input_data[f"lag_{j}"] = recent[-j]
+
+                result = get_champion_prediction(input_data, champion_meta["version"])
+
+                if result.get("status") == "success":
+                    st.success(f"Champion forecast for {forecast_days} days ahead: {result['forecast']:.2f}")
+                else:
+                    st.error(result.get("error", "Unknown error."))
+
+            except Exception as e:
+                st.error(f"Error during forecasting: {e}")
+
+# === Phase 10: Anomaly Detection & Email Alerts ===
+st.subheader("🚨 Anomaly Detection & Alerting")
+
+send_email = st.toggle("Enable Email Alerts", value=False)
+alert_threshold = st.slider("Anomaly Threshold (%)", 5, 100, 20)
+actual_input = st.number_input("Enter Actual Demand (today)", min_value=0.0)
+
+# Load email credentials from Streamlit secrets or environment variables
+EMAIL_USER = st.secrets.get("email_user") or os.getenv("EMAIL_USER")
+EMAIL_PASS = st.secrets.get("email_pass") or os.getenv("EMAIL_PASS")
+
+if st.button("📊 Check for Anomaly"):
+    if champion_meta:
+        version_path = os.path.join(version_dir, champion_meta["version"])
+        model_type = champion_meta["model_type"]
+
+        try:
+            if model_type == "XGBoost":
+                model = joblib.load(os.path.join(version_path, "model.pkl"))
+                recent = daily_demand[-7:].values.tolist()
+
+                # Build today's input
+                today = pd.Timestamp.now().normalize()
+                is_promo = 1 if today.weekday() == 4 else 0
+                is_holiday = 1 if today.strftime("%Y-%m-%d") in holiday_dates else 0
+                input_data = {
+                    "is_promo": is_promo,
+                    "is_holiday": is_holiday
+                }
+                for j in range(1, 8):
+                    input_data[f"lag_{j}"] = recent[-j]
+                pred = model.predict(pd.DataFrame([input_data]))[0]
+
+            elif model_type == "ARIMA":
+                model = joblib.load(os.path.join(version_path, "model.pkl"))
+                pred = model.forecast(steps=1)[0]
+
+            elif model_type == "LSTM":
+                model = joblib.load(os.path.join(version_path, "model.pkl"))
+                scaler = joblib.load(os.path.join(version_path, "scaler.pkl"))
+                recent = daily_demand[-30:].values.reshape(-1, 1)
+                scaled_recent = scaler.transform(recent)
+                pred = model.predict(scaled_recent.reshape(1, 30, 1))
+                pred = scaler.inverse_transform(pred)[0][0]
+
+            # Calculate deviation and check for anomaly
+            deviation = abs(pred - actual_input) / max(actual_input, 1) * 100
+            st.metric("Predicted", round(pred, 2))
+            st.metric("Deviation", f"{deviation:.2f}%")
+
+            if deviation > alert_threshold:
+                st.warning(f"⚠️ Anomaly Detected! Deviation: {deviation:.2f}%")
+                if send_email and EMAIL_USER and EMAIL_PASS:
+                    st.info("Email alert would be sent here (email sending not implemented)")
+            else:
+                st.success(f"✅ No anomaly detected. Deviation: {deviation:.2f}%")
+
+        except Exception as e:
+            st.error(f"Anomaly check error: {e}")
+    else:
+        st.error("No champion model available for anomaly detection")
+
